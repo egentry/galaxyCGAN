@@ -119,7 +119,7 @@ class CGAN(object):
 #             # get number of batches for a single epoch
 #             self.num_batches = len(self.data_X) // self.batch_size
 
-        elif dataset_name == "galaxy":
+        elif "galaxy" in dataset_name:
                         # parameters
             self.input_height  = self.image_size
             self.input_width   = self.image_size
@@ -167,10 +167,11 @@ class CGAN(object):
         # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
 
         with tf.variable_scope("generator", reuse=reuse):
-            inputs = tf.concat(axis=1, values=[z,y])
+            inputs = tf.concat(axis=1, values=[z, y])
             net = tf.nn.relu(bn(linear(inputs, 1024, scope='g_fc1'), is_training=is_training, scope='g_bn1'))
             net = tf.nn.relu(bn(linear(net, 128 * 5 * 5, scope='g_fc2'), is_training=is_training, scope='g_bn2'))
             net = tf.reshape(net, [self.batch_size, 5, 5, 128])
+
             net = tf.nn.relu(
                 bn(deconv2d(net, [self.batch_size, self.output_height//2, self.output_height//2, 64],
                             k_h=4, k_w=4, d_h=5, d_w=5,
@@ -198,10 +199,10 @@ class CGAN(object):
         self.inputs = tf.placeholder(tf.float32, [batch_size] + image_dims, name='real_images')
 
         # noises
-        self.z = tf.placeholder(tf.float32, [batch_size, self.z_dim], name='z')
+        self.z = tf.placeholder(tf.float32, [None, self.z_dim], name='z')
 
         # conditionals
-        self.y = tf.placeholder(tf.float32, [batch_size, self.y_dim], name='y')
+        self.y = tf.placeholder(tf.float32, [None, self.y_dim], name='y')
 
 
         """ Loss Function """
@@ -258,7 +259,7 @@ class CGAN(object):
         tf.global_variables_initializer().run(session=self.sess)
 
         # graph inputs for visualize training results
-        self.sample_z = np.random.uniform(-1, 1, size=(self.batch_size , self.z_dim))
+        self.sample_z = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
 
         # saver to save model
         self.saver = tf.train.Saver()
@@ -329,6 +330,14 @@ class CGAN(object):
 
         # save model for final step
         self.save(self.checkpoint_dir, counter)
+
+    def generate_samples(self, y_sample):
+        z_sample = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
+
+        samples = self.sess.run(self.fake_images, feed_dict={self.z: z_sample,
+                                                             self.y: y_sample,})
+
+        return samples
 
     def visualize_results(self, epoch, label, y_values=[.15, 8.5]):
 
