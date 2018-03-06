@@ -20,11 +20,12 @@ def lrelu(x, leak=0.2, name="lrelu"):
     return tf.maximum(x, leak*x)
 
 
-def conv2d(input_, output_dim, k_h=5, k_w=5, d_h=2, d_w=2, stddev=0.02, name="conv2d"):
+def conv2d(input_, output_dim, k_h=5, k_w=5, d_h=2, d_w=2, stddev=0.02,
+    name="conv2d", padding="SAME"):
     with tf.variable_scope(name):
         w = tf.get_variable('w', [k_h, k_w, input_.get_shape()[-1], output_dim],
               initializer=tf.truncated_normal_initializer(stddev=stddev))
-        conv = tf.nn.conv2d(input_, w, strides=[1, d_h, d_w, 1], padding='SAME')
+        conv = tf.nn.conv2d(input_, w, strides=[1, d_h, d_w, 1], padding=padding)
 
         biases = tf.get_variable('biases', [output_dim], initializer=tf.constant_initializer(0.0))
         conv = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape())
@@ -148,8 +149,8 @@ class CGAN(object):
             raise NotImplementedError
 
     def discriminator(self, x, y, is_training=True, reuse=False):
-        # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
-        # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
+        # Network Architecture is based on infoGAN (https://arxiv.org/abs/1606.03657)
+        # Architecture (roughly): (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
         with tf.variable_scope("discriminator", reuse=reuse):
 
             net = lrelu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
@@ -163,31 +164,60 @@ class CGAN(object):
             return out, out_logit, net
 
     def generator(self, z, y, is_training=True, reuse=False):
-        # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
-        # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
+        # Originally started with infoGAN-like architecture
+        # but that lead to strong checkerboard artifacts
+        # given the 2 deconv layers with stride=5x5
+
+        # so now I'm trying a resize approach
+        # (see: https://distill.pub/2016/deconv-checkerboard/)
 
         with tf.variable_scope("generator", reuse=reuse):
             inputs = tf.concat(axis=1, values=[z, y])
             net = tf.nn.relu(bn(linear(inputs, 1024, scope='g_fc1'), is_training=is_training, scope='g_bn1'))
-            net = tf.nn.relu(bn(linear(net, 128 * 5 * 5, scope='g_fc2'), is_training=is_training, scope='g_bn2'))
-            net = tf.reshape(net, [self.batch_size, 5, 5, 128])
+            net = tf.nn.relu(bn(linear(net, 128 * 16 * 16, scope='g_fc2'), is_training=is_training, scope='g_bn2'))
+            net = tf.reshape(net, [self.batch_size, 16, 16, 128])
+
+            post_conv_size = 32
+            kernel_size = 4
+            padding = "SAME"
+            if padding == "SAME":
+                pre_conv_size = post_conv_size
+            else:
+                pre_conv_size = post_conv_size + 2*(kernel_size-1)
 
             net = tf.nn.relu(
-                bn(deconv2d(net, [self.batch_size, self.output_height//2, self.output_height//2, 64],
-                            k_h=4, k_w=4, d_h=5, d_w=5,
-                            name='g_dc3'), is_training=is_training,
-                   scope='g_bn3'))
+                bn(conv2d(
+                    tf.image.resize_bilinear(net, [pre_conv_size, pre_conv_size]),
+                    64,
+                    k_h=kernel_size, k_w=kernel_size, d_h=1, d_w=1,
+                    name="g_rc3",
+                    padding=padding,
+                    ),
+                   is_training=is_training,
+                   scope="g_bn3",
+                  )
+            )
 
-            out = tf.nn.sigmoid(deconv2d(net, [self.batch_size, self.output_height, self.output_height, self.c_dim],
-                                         k_h=4, k_w=4, d_h=2, d_w=2, name='g_dc4'))
+            post_conv_size = self.output_height
+            kernel_size = 4
+            padding = "SAME"
+            if padding == "SAME":
+                pre_conv_size = post_conv_size
+            else:
+                pre_conv_size = post_conv_size + 2*(kernel_size-1)
+
+            out = conv2d(
+                    tf.image.resize_bilinear(net, [pre_conv_size, pre_conv_size]),
+                    self.c_dim,
+                    k_h=kernel_size, k_w=kernel_size, d_h=1, d_w=1,
+                    name="g_rc4",
+                    padding=padding,
+                )
+
+#             out = tf.nn.sigmoid(out)
 
             return out
 
-#         with tf.variable_scope("generator", reuse=reuse):
-#             inputs = tf.concat(axis=1, values=[z, y])
-#             G_h1 = tf.nn.relu(tf.matmul(inputs, G_W1) + G_b1)
-#             G_log_prob = tf.matmul(G_h1, G_W2) + G_b2
-#             G_prob = tf.nn.sigmoid(G_log_prob)
 
     def build_model(self):
         # some parameters
@@ -413,3 +443,4 @@ class CGAN(object):
 
         plot_filename = os.path.join(plot_dir, self.model_name + '_epoch%03d' % epoch + '_{}.png'.format(label))
         plt.savefig(plot_filename, bbox_inches='tight')
+        plt.close(fig)
