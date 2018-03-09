@@ -7,13 +7,11 @@ import matplotlib.gridspec as gridspec
 import os
 import time
 
+from misc import transform_0_1
+
 mpl.rcParams['savefig.dpi'] = 80
 mpl.rcParams['figure.dpi'] = 80
 mpl.rcParams['figure.figsize'] = np.array((10, 6))*.6
-
-
-def transform_0_1(X):
-    return (X - X.min())/(X.max() - X.min())
 
 
 def lrelu(x, leak=0.2, name="lrelu"):
@@ -84,6 +82,7 @@ class CGAN(object):
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name,
                  image_size, X_img, y_conditional,
+                 y_for_visualization_samples,
                  checkpoint_dir, result_dir, log_dir):
         self.sess = sess
         self.dataset_name = dataset_name
@@ -95,6 +94,7 @@ class CGAN(object):
         self.image_size = image_size
         self.X_img = X_img
         self.y_conditional = y_conditional
+        self.y_for_visualization_samples = y_for_visualization_samples
 
         if dataset_name == 'mnist' or dataset_name == 'fashion-mnist':
             raise NotImplementedError
@@ -128,8 +128,8 @@ class CGAN(object):
             self.output_width  = self.image_size
 
             self.z_dim = z_dim         # dimension of noise-vector
-            self.y_dim = 2  # number of conditional input variables
-            self.c_dim = 3  # channel dim
+            self.y_dim = y_conditional.shape[1]  # number of conditional input variables
+            self.c_dim = self.X_img.shape[-1]  # channel dim
 
             # train
             self.learning_rate = 0.0002
@@ -138,7 +138,7 @@ class CGAN(object):
             # test
             self.sample_num = 16  # number of generated images to be saved
 
-            # load mnist
+            # load data
             self.data_X = self.X_img
             self.data_y = self.y_conditional
 
@@ -179,11 +179,11 @@ class CGAN(object):
 
             post_conv_size = 32
             kernel_size = 4
-            padding = "SAME"
+            padding = "VALID"
             if padding == "SAME":
                 pre_conv_size = post_conv_size
             else:
-                pre_conv_size = post_conv_size + 2*(kernel_size-1)
+                pre_conv_size = post_conv_size + (kernel_size-1)
 
             net = tf.nn.relu(
                 bn(conv2d(
@@ -200,11 +200,11 @@ class CGAN(object):
 
             post_conv_size = self.output_height
             kernel_size = 4
-            padding = "SAME"
+            padding = "VALID"
             if padding == "SAME":
                 pre_conv_size = post_conv_size
             else:
-                pre_conv_size = post_conv_size + 2*(kernel_size-1)
+                pre_conv_size = post_conv_size + (kernel_size-1)
 
             out = conv2d(
                     tf.image.resize_bilinear(net, [pre_conv_size, pre_conv_size]),
@@ -346,7 +346,7 @@ class CGAN(object):
                 # save training results for every 300 steps
                 if np.mod(counter, 300) == 0:
                     label = 'train_{:02d}_{:04d}'.format(epoch, idx)
-                    self.visualize_results(epoch, label)
+                    self.visualize_results(epoch, label, self.y_for_visualization_samples)
 
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading pre-trained model
@@ -356,7 +356,7 @@ class CGAN(object):
             self.save(self.checkpoint_dir, counter)
 
             # show temporal results
-            self.visualize_results(epoch, "test_at_end")
+            self.visualize_results(epoch, "test_at_end", self.y_for_visualization_samples)
 
         # save model for final step
         self.save(self.checkpoint_dir, counter)
@@ -369,7 +369,7 @@ class CGAN(object):
 
         return samples
 
-    def visualize_results(self, epoch, label, y_values=[.15, 8.5]):
+    def visualize_results(self, epoch, label, y_values):
 
         """ random condition, random noise """
 
