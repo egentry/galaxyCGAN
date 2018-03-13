@@ -39,7 +39,12 @@ def y_binner(y):
 
 
 class Standardizer(object):
-    def __init__(self, y_train):
+    def __init__(self, means=0, std=1):
+        """means and std should be floats or shaped like y.shape[1:]"""
+        self.means = means
+        self.std = std
+
+    def train(self, y_train):
         self.means = y_train.mean(axis=0)
         self.std = y_train.std(axis=0)
 
