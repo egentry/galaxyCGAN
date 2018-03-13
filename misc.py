@@ -36,3 +36,12 @@ def y_binner(y):
                                                  bins=M_bin_edges)
 
     return new_y
+
+
+class Standardizer(object):
+    def __init__(self, y_train):
+        self.means = y_train.mean(axis=0)
+        self.std = y_train.std(axis=0)
+
+    def __call__(self, y_new):
+        return (y_new - self.means) / self.std

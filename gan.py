@@ -162,22 +162,20 @@ class CGAN(object):
         else:
             raise NotImplementedError
 
-    def discriminator(self, x, y, is_training=True, reuse=False):
+    def predictor(self, x, is_training=True, reuse=False):
         # Network Architecture is based on infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture (roughly): (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
-        with tf.variable_scope("discriminator", reuse=reuse):
+        with tf.variable_scope("predictor", reuse=reuse):
 
             net = lrelu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
             net = lrelu(bn(conv2d(net, 128, 4, 4, 2, 2, name='d_conv2'),
                            is_training=is_training, scope='d_bn2'))
             net = tf.reshape(net, [self.batch_size, -1])
-            net = tf.concat(axis=1, values=[net, y])  # this is custom; maybe wrong?
             net = lrelu(bn(linear(net, 1024, scope='d_fc3'),
                            is_training=is_training, scope='d_bn3'))
-            out_logit = linear(net, 1, scope='d_fc4')
-            out = tf.nn.sigmoid(out_logit)
+            out = linear(net, self.y_dim, scope='d_fc4')
 
-            return out, out_logit, net
+            return out, net
 
     def generator(self, z, y, is_training=True, reuse=False):
         # Originally started with infoGAN-like architecture
@@ -255,30 +253,21 @@ class CGAN(object):
         """ Loss Function """
 
         # output of D for real images
-        D_real, D_real_logits, _ = self.discriminator(self.inputs, self.y,
-                                                      is_training=True,
-                                                      reuse=False)
+        D_real, _ = self.predictor(self.inputs, is_training=True, reuse=False)
 
         # output of D for fake images
         G = self.generator(self.z, self.y, is_training=True, reuse=False)
-        D_fake, D_fake_logits, _ = self.discriminator(G, self.y,
-                                                      is_training=True,
-                                                      reuse=True)
+        D_fake, _ = self.predictor(G, is_training=True, reuse=True)
 
         # get loss for discriminator
-        d_loss_real = tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(logits=D_real_logits,
-                                                    labels=tf.ones_like(D_real)))
-        d_loss_fake = tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(logits=D_fake_logits,
-                                                    labels=tf.zeros_like(D_fake)))
+        d_loss_real = tf.nn.l2_loss(tf.subtract(D_real, self.y))
+        d_loss_fake = tf.nn.l2_loss(tf.subtract(D_fake, self.y))
 
-        self.d_loss = d_loss_real + d_loss_fake
+        self.d_loss = tf.maximum(tf.subtract(d_loss_real, d_loss_fake),
+                                 tf.constant(0.))
 
         # get loss for generator
-        self.g_loss = tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(logits=D_fake_logits,
-                                                    labels=tf.ones_like(D_fake)))
+        self.g_loss = d_loss_fake
 
         """ Training """
         # divide trainable variables into a group for D and a group for G
@@ -295,8 +284,8 @@ class CGAN(object):
 
         """" Testing """
         # for test
-        self.fake_images = self.generator(self.z, self.y, is_training=False,
-                                          reuse=True)
+        self.fake_images = self.generator(self.z, self.y,
+                                          is_training=False, reuse=True)
 
         """ Summary """
         d_loss_real_sum = tf.summary.scalar("d_loss_real", d_loss_real)
