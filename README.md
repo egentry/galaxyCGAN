@@ -17,3 +17,5 @@ Most of the interesting stuff is stored in notebooks. The filenames are pretty s
  - `simple gan.ipynb` : training a simple conditional GAN to accept redshift and stellar mass, and output a "realistic" looking galaxy image
  - `classifier with DAGAN.ipynb` : uses the GAN from `simple gan.ipynb` to create training images for a classifier with the same architecture as `simple classifier.ipynb`. Trains the classifier on generated images; validates the results on real images.
  
+That should be enough to do everything locally, but if you want to skip training the gan (~100 cpu hours), you can download the checkpoint files from [this directory on dropbox](https://www.dropbox.com/sh/izks7nrxqozx2i1/AABDljzyE1Y3W2c9r1_Vtv1Ya?dl=0). Note: I make no guarantee about these files being available after March 2018; after that point you should just train the gan yourself using `simple gan.ipynb`.
+
