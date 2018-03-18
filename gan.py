@@ -95,7 +95,9 @@ class CGAN(object):
                  y_for_visualization_samples,
                  checkpoint_dir, result_dir, log_dir,
                  d_learning_rate=0.0002,
-                 relative_learning_rate=10):
+                 relative_learning_rate=10,
+                 loss_weighting=50,
+                 ):
         self.sess = sess
         self.dataset_name = dataset_name
         self.checkpoint_dir = checkpoint_dir
@@ -107,6 +109,7 @@ class CGAN(object):
         self.X_img = X_img
         self.y_conditional = y_conditional
         self.y_for_visualization_samples = y_for_visualization_samples
+        self.loss_weighting = loss_weighting
 
         if dataset_name == 'mnist' or dataset_name == 'fashion-mnist':
             raise NotImplementedError
@@ -162,21 +165,6 @@ class CGAN(object):
         else:
             raise NotImplementedError
 
-    def predictor(self, x, is_training=True, reuse=False):
-        # Network Architecture is based on infoGAN (https://arxiv.org/abs/1606.03657)
-        # Architecture (roughly): (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
-        with tf.variable_scope("predictor", reuse=reuse):
-
-            net = lrelu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
-            net = lrelu(bn(conv2d(net, 128, 4, 4, 2, 2, name='d_conv2'),
-                           is_training=is_training, scope='d_bn2'))
-            net = tf.reshape(net, [self.batch_size, -1])
-            net = lrelu(bn(linear(net, 1024, scope='d_fc3'),
-                           is_training=is_training, scope='d_bn3'))
-            out = linear(net, self.y_dim, scope='d_fc4')
-
-            return out, net
-
     def generator(self, z, y, is_training=True, reuse=False):
         # Originally started with infoGAN-like architecture
         # but that lead to strong checkerboard artifacts
@@ -211,7 +199,7 @@ class CGAN(object):
                     ),
                    is_training=is_training,
                    scope="g_bn3",
-                  )
+                   )
             )
 
             post_conv_size = self.output_height
@@ -230,9 +218,87 @@ class CGAN(object):
                     padding=padding,
                 )
 
-#             out = tf.nn.sigmoid(out)
-
             return out
+
+    def discriminator(self, x, is_training=True, reuse=False):
+        # Network Architecture is based on infoGAN (https://arxiv.org/abs/1606.03657)
+        # Architecture (roughly): (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
+        #
+        # Note: we've now combined the real and fake images into one
+        # big batch. See https://github.com/openai/improved-gan/issues/11
+        with tf.variable_scope("discriminator", reuse=reuse):
+            joint_batch_size = self.batch_size*2
+
+            net = lrelu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
+            last_num_kernels = 128
+            net_post_conv = lrelu(bn(conv2d(net, last_num_kernels, 4, 4, 2, 2,
+                                            name='d_conv2'),
+                                     is_training=is_training, scope='d_bn2'))
+
+            net_flattened = tf.reshape(net_post_conv, [joint_batch_size, -1])
+
+            # This part computes the predicted y values
+            net_y = lrelu(bn(linear(net_flattened, 1024, scope='d_fc3'),
+                          is_training=is_training, scope='d_bn3'))
+            out_y = linear(net_y, self.y_dim, scope='d_fc4')
+
+            # This part computes the minibatch discrimination score
+            # See arxiv.org/abs/1606.03498 for details
+            # (Salimans et al. 2016: Improved Techniques for Training GANs)
+
+            # In particular this part is based on the code from:
+            # github.com/openai/improved-gan/blob/master/imagenet/discriminator.py
+
+            dim_per_kernel = 5
+            x = linear(net_flattened, last_num_kernels * dim_per_kernel,
+                       scope="d_mbd")
+            activation = tf.reshape(x,
+                                    [joint_batch_size,
+                                     last_num_kernels,
+                                     dim_per_kernel],
+                                    )
+
+            big = np.zeros((joint_batch_size, joint_batch_size),
+                           dtype='float32')
+            big += np.eye(joint_batch_size)
+            big = tf.expand_dims(big, 1)
+
+            abs_dif = tf.reduce_sum(tf.abs(tf.expand_dims(activation, 3)
+                                           - tf.expand_dims(tf.transpose(activation, [1, 2, 0]),
+                                                            0)),
+                                    2)
+            mask = 1. - big
+            masked = tf.exp(-abs_dif) * mask
+
+            def half(tens, second):
+                m, n, _ = tens.get_shape()
+                m = int(m)
+                n = int(n)
+                return tf.slice(tens, [0, 0, second * self.batch_size], [m, n, self.batch_size])
+
+            f1 = tf.reduce_sum(half(masked, 0), 2) / tf.reduce_sum(half(mask, 0))
+            f2 = tf.reduce_sum(half(masked, 1), 2) / tf.reduce_sum(half(mask, 1))
+            minibatch_features = tf.concat([f1, f2], 1)
+
+            net_with_minibatch = tf.concat([net_flattened, minibatch_features], 1)
+
+            out_logit = linear(net_with_minibatch, 1, scope='d_fc_mb')
+
+            # split up outputs by generator and real data
+            out_y_on_data = tf.slice(out_y, [0, 0], [self.batch_size, self.y_dim])
+            out_y_on_generator = tf.slice(out_y, [self.batch_size, 0], [self.batch_size, self.y_dim])
+
+            out_logit_on_data = tf.slice(out_logit, [0, 0], [self.batch_size, 1])
+            out_logit_on_generator = tf.slice(out_logit,
+                                              [self.batch_size, 0],
+                                              [self.batch_size, 1])
+
+            outputs = [out_y_on_data, out_y_on_generator,
+                       out_logit_on_data, out_logit_on_generator,
+                       net_y
+                       ]
+
+            return outputs
 
     def build_model(self):
         # some parameters
@@ -244,30 +310,58 @@ class CGAN(object):
         self.inputs = tf.placeholder(tf.float32, [batch_size] + image_dims,
                                      name='real_images')
 
+        self.inputs_joint = tf.placeholder(tf.float32,
+                                           [2*batch_size] + image_dims,
+                                           name='joint_images')
+
         # noises
-        self.z = tf.placeholder(tf.float32, [None, self.z_dim], name='z')
+        self.z = tf.placeholder(tf.float32, [batch_size, self.z_dim], name='z')
 
         # conditionals
-        self.y = tf.placeholder(tf.float32, [None, self.y_dim], name='y')
+        self.y = tf.placeholder(tf.float32, [batch_size, self.y_dim], name='y')
 
         """ Loss Function """
 
-        # output of D for real images
-        D_real, _ = self.predictor(self.inputs, is_training=True, reuse=False)
-
-        # output of D for fake images
+        # output of D for real AND fake images
         G = self.generator(self.z, self.y, is_training=True, reuse=False)
-        D_fake, _ = self.predictor(G, is_training=True, reuse=True)
+
+        joint_inputs = tf.concat([self.inputs, G], 0)
+        D_y_real, D_y_fake, D_logit_real, D_logit_fake, _ = self.discriminator(joint_inputs, is_training=True,
+                                                                               reuse=False,
+                                                                               )
 
         # get loss for discriminator
-        d_loss_real = tf.nn.l2_loss(tf.subtract(D_real, self.y))
-        d_loss_fake = tf.nn.l2_loss(tf.subtract(D_fake, self.y))
+        # # First start with the l2 loss
+        d_loss_y_real = tf.nn.l2_loss(tf.subtract(D_y_real, self.y))
+        d_loss_y_fake = tf.nn.l2_loss(tf.subtract(D_y_fake, self.y))
 
-        self.d_loss = tf.maximum(tf.subtract(d_loss_real, d_loss_fake),
-                                 tf.constant(0.))
+        d_loss_real = d_loss_y_real
+        d_loss_fake = d_loss_y_fake
+
+        self.d_loss_y = tf.maximum(tf.subtract(d_loss_y_real, d_loss_y_fake),
+                                   tf.constant(0.))
+
+        # # Next calculate the minibatch discriminator loss
+        d_loss_logit_real = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(logits=D_logit_real,
+                                                    labels=tf.ones_like(D_logit_real)))
+        d_loss_logit_fake = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(logits=D_logit_fake,
+                                                    labels=tf.zeros_like(D_logit_fake)))
+
+        self.d_loss = self.d_loss_y \
+             + self.loss_weighting * (d_loss_logit_real + d_loss_logit_fake)
 
         # get loss for generator
-        self.g_loss = d_loss_fake
+        # # First start with the l2 loss
+        g_loss_y = d_loss_y_fake
+
+        # # Next calculate the minibatch discriminator loss
+        g_loss_logit = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(logits=D_logit_fake,
+                                                    labels=tf.ones_like(D_logit_fake)))
+
+        self.g_loss = g_loss_y + self.loss_weighting * g_loss_logit
 
         """ Training """
         # divide trainable variables into a group for D and a group for G
@@ -296,6 +390,9 @@ class CGAN(object):
         # final summary operations
         self.g_sum = tf.summary.merge([d_loss_fake_sum, g_loss_sum])
         self.d_sum = tf.summary.merge([d_loss_real_sum, d_loss_sum])
+
+    def predictor(self, *args, **kwargs):
+        raise NotImplementedError("`predictor()` no longer exists - replaced by `dicriminator()`")
 
     def train(self):
 
@@ -342,7 +439,8 @@ class CGAN(object):
 
                 # update G network
                 _, summary_str, g_loss = self.sess.run([self.g_optim, self.g_sum, self.g_loss],
-                                                       feed_dict={self.z: batch_z,
+                                                       feed_dict={self.inputs: batch_images,
+                                                                  self.z: batch_z,
                                                                   self.y: batch_y})
                 self.writer.add_summary(summary_str, counter)
 
@@ -377,8 +475,9 @@ class CGAN(object):
         # save model for final step
         self.save(self.checkpoint_dir, counter)
 
-    def generate_samples(self, y_sample):
-        z_sample = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
+    def generate_samples(self, y_sample, z_sample=None):
+        if z_sample is None:
+            z_sample = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
 
         samples = self.sess.run(self.fake_images, feed_dict={self.z: z_sample,
                                                              self.y: y_sample})
