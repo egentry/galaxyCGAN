@@ -484,7 +484,7 @@ class CGAN(object):
 
         return samples
 
-    def visualize_results(self, epoch, label, y_values):
+    def visualize_results(self, epoch, label, y_values, log_scale=True):
 
         """ random condition, random noise """
 
@@ -535,7 +535,7 @@ class CGAN(object):
             print(" [*] Failed to find a checkpoint")
             return False, 0
 
-    def plot(self, samples):
+    def plot(self, samples, log_scale=True):
         """ assumes samples is of shape [n_img, img_x, img_y, num_channels]
         where n_img is assumed to be a perfect square"""
         assert(samples.shape[0]**.5 % 1 == 0)
@@ -543,6 +543,9 @@ class CGAN(object):
         fig = plt.figure(figsize=(4, 4))
         gs = gridspec.GridSpec(fig_per_side, fig_per_side)
         gs.update(wspace=0.05, hspace=0.05)
+
+        if not log_scale:
+            samples = 10**samples
 
         for i, sample in enumerate(samples):
             ax = plt.subplot(gs[i])
